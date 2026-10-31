@@ -117,7 +117,7 @@ function render(){
   $('#tot').textContent=fmt(total(),0);$('#gb').style.width=Math.min(100,w.gd*100)+'%';$('#gp').textContent=fmt(Math.min(100,w.gd*100),1)+'%';
   $('#win').innerHTML=w.gd>=1?'<div class="win">🎉 金のどんぐりをゲット！おめでとう！ 🎉</div>':'';
   const q0=px.KD;if(q0){const up=q0.mid>=(prev.KD||q0.mid);$('#pr').innerHTML=`<span class="${up?'up':'dn'}">${fmt(q0.mid,3)}</span> <small style="font-size:12px;color:var(--sub);font-weight:400">売${fmt(q0.bid,3)} / 買${fmt(q0.ask,3)}</small>`}
-  $('#ct').textContent=PAIRS[sel].n+'（1くるみ = ○どんぐり）';
+  {const d=range/60;$('#ct').textContent=PAIRS[sel].n+'　ローソク足 1本='+(d<60?d+'秒':d<3600?Math.round(d/60)+'分':Math.round(d/360)/10+'時間')}
   $$('[data-r]').forEach(b=>b.classList.toggle('on',+b.dataset.r==range));
   $$('[data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m==mode));
   $$('[data-b]').forEach(b=>b.classList.toggle('on',b.dataset.b==btab));
@@ -135,24 +135,27 @@ function render(){
 }
 async function loadRank(){try{const j=await api('ranking');
   $('#rl').innerHTML=j.top.map((x,i)=>`<div><span>${i+1}. ${x.gold?'🏆':'🌰'} ${x.name.replace(/</g,'&lt;')}</span><b>${fmt(x.total,0)}</b></div>`).join('')+(j.me&&j.me.rank>20?`<div><span>…${j.me.rank}位 あなた</span><b>${fmt(j.me.total,0)}</b></div>`:'')+`<small>参加者 ${j.count}人（どんぐり換算）</small>`}catch{}}
-async function loadChart(){try{const j=await api('chart?pair='+sel+'&range='+range);pts=j.pts;chartNow=j.now;drawChart()}catch{}}
+async function loadChart(){try{const j=await api('chart?pair='+sel+'&range='+range);pts=j.candles;chartNow=j.now;drawChart()}catch{}}
 function tfmt(ms){const d=new Date(ms),o={hour:'2-digit',minute:'2-digit',hour12:false};
   if(range<=300)o.second='2-digit';if(range>86400){return d.toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'})+' '+d.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',hour12:false})}
   return d.toLocaleTimeString('ja-JP',o)}
 function drawChart(){
   const c=$('#cv');if(!c||!pts.length)return;const dpr=devicePixelRatio||1,W=c.clientWidth,H=c.clientHeight;c.width=W*dpr;c.height=H*dpr;
-  const g=c.getContext('2d');g.scale(dpr,dpr);const all=pts.concat(px[sel]?[px[sel].mid]:[]);
+  const g=c.getContext('2d');g.scale(dpr,dpr);
+  const cs=pts.map(x=>({...x}));const m=px[sel]&&px[sel].mid;if(m){const L=cs[cs.length-1];L.c=m;L.h=Math.max(L.h,m);L.l=Math.min(L.l,m)}
   const ps=user.positions.filter(o=>o.pair==sel).map(o=>{const d=0.8*o.margin/o.units;return{o,cut:o.side=='long'?o.entry-d:o.entry+d}});
-  let mn=Math.min(...all,...ps.map(p=>p.o.entry)),mx=Math.max(...all,...ps.map(p=>p.o.entry));const pad=(mx-mn)*.1||1;mn-=pad;mx+=pad;
-  const PW=W-62,PH=H-22,X=i=>i/(all.length-1)*PW,Y=v=>PH-(v-mn)/(mx-mn)*(PH-10)-5;
-  const css=getComputedStyle(document.body),S=n=>css.getPropertyValue(n),col=S(all[all.length-1]>=all[0]?'--up':'--dn');
+  let mn=Math.min(...cs.map(x=>x.l),...ps.map(p=>p.o.entry)),mx=Math.max(...cs.map(x=>x.h),...ps.map(p=>p.o.entry));const pad=(mx-mn)*.1||1;mn-=pad;mx+=pad;
+  const PW=W-62,PH=H-22,Y=v=>PH-(v-mn)/(mx-mn)*(PH-10)-5;
+  const css=getComputedStyle(document.body),S=n=>css.getPropertyValue(n);
   g.font='11px sans-serif';g.lineWidth=1;
   for(let i=0;i<4;i++){const v=mn+(mx-mn)*i/3,y=Y(v);g.strokeStyle=S('--line');g.beginPath();g.moveTo(0,y);g.lineTo(PW,y);g.stroke();g.fillStyle=S('--sub');g.textAlign='left';g.fillText(fmt(v,2),PW+4,y+4)}
-  // 横軸（時間）
   const t1=chartNow,t0=chartNow-range*1000;g.fillStyle=S('--sub');
   const N=W<500?2:4;for(let i=0;i<=N;i++){const x=PW*i/N;g.textAlign=i==0?'left':i==N?'right':'center';g.fillText(tfmt(t0+(t1-t0)*i/N),x,H-5);g.strokeStyle=S('--line');g.beginPath();g.moveTo(x,PH);g.lineTo(x,PH+4);g.stroke()}
-  // 価格線
-  g.beginPath();all.forEach((v,i)=>i?g.lineTo(X(i),Y(v)):g.moveTo(X(i),Y(v)));g.strokeStyle=col;g.lineWidth=2;g.stroke();
+  // ローソク足
+  const cw=PW/cs.length,bw=Math.max(1.5,cw*0.7);
+  cs.forEach((k,i)=>{const x=(i+0.5)*cw,col=S(k.c>=k.o?'--up':'--dn');g.strokeStyle=col;g.fillStyle=col;g.lineWidth=1;
+    g.beginPath();g.moveTo(x,Y(k.h));g.lineTo(x,Y(k.l));g.stroke();
+    const y1=Y(Math.max(k.o,k.c)),y2=Y(Math.min(k.o,k.c));g.fillRect(x-bw/2,y1,bw,Math.max(1,y2-y1))});
   // レバレッジの建値・ロスカットライン
   ps.forEach(({o,cut})=>{const lc=S(o.side=='long'?'--up':'--dn'),y=Y(o.entry);g.lineWidth=1.5;g.strokeStyle=lc;g.setLineDash([6,4]);g.beginPath();g.moveTo(0,y);g.lineTo(PW,y);g.stroke();
     g.fillStyle=lc;g.textAlign='left';g.fillText((o.side=='long'?'ロング':'ショート')+' ×'+o.lev+' 建値 '+fmt(o.entry,2),4,y-4);
@@ -162,6 +165,6 @@ function drawChart(){
 async function pollPrices(){try{const j=await api('prices');for(const k in j.prices){prev[k]=px[k]?px[k].mid:j.prices[k].mid;px[k]=j.prices[k]}render()}catch{}}
 async function pollMe(){try{user=await api('me');const un=user.notices.filter(n=>!n.seen&&!shown.has(n.id));
   if(un.length){un.reverse().forEach(n=>{shown.add(n.id);toast(n.text)});user=await api('seen',{})}render();if(btab=='rank')loadRank()}catch(e){if(/ログイン/.test(e.message)){token=null;localStorage.removeItem('tk');loginView()}}}
-async function start(){appView();await pollPrices();await pollMe();timers=[setInterval(pollPrices,1500),setInterval(pollMe,5000),setInterval(loadChart,15000)]}
+async function start(){appView();await pollPrices();await pollMe();timers=[setInterval(pollPrices,1500),setInterval(pollMe,5000),setInterval(loadChart,5000)]}
 (async()=>{if(token){try{user=await api('me');start();return}catch{token=null;localStorage.removeItem('tk')}}loginView()})();
 </script></body></html>

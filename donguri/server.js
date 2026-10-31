@@ -104,9 +104,13 @@ app.get('/api/prices', (req, res) => res.json({ now: Date.now(), prices: quotesA
 app.get('/api/chart', (req, res) => {
   const k = req.query.pair, range = Math.min(Math.max(Number(req.query.range) || 300, 60), 604800 * 2);
   if (!PR.PAIRS[k]) return res.status(400).json({ error: 'pair?' });
-  const now = Date.now() / 1000, pts = [];
-  for (let i = 150; i >= 0; i--) pts.push(PR.quote(k, now - (range * i) / 150).mid);
-  res.json({ now: Date.now(), pts });
+  const N = 60, S = 12, now = Date.now() / 1000, candles = [];
+  for (let i = 0; i < N; i++) {                       // ローソク足1本 = range/N 秒
+    const t0 = now - (range * (N - i)) / N, dt = range / N / S; let o, c, h = -Infinity, l = Infinity;
+    for (let j = 0; j <= S; j++) { const m = PR.quote(k, t0 + dt * j).mid; if (j === 0) o = m; c = m; if (m > h) h = m; if (m < l) l = m; }
+    candles.push({ o, h, l, c });
+  }
+  res.json({ now: now * 1000, candles });
 });
 
 app.post('/api/register', wrap(async (req, res) => {
