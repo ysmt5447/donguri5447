@@ -9,7 +9,7 @@ const SECRET = process.env.SECRET || crypto.randomBytes(32).toString('hex');
 const START = { d: 100000, k: 0, gd: 0 };
 const GOLD = 10000000;  // 金のどんぐり 1こ = 1,000万どんぐり（ずっと同じ）     // 初期資金
 const CLAIM_AMOUNT = 5000, CLAIM_INTERVAL = 3600e3;  // どんぐり拾い: 1時間ごと
-const LEVS = [2, 5, 10, 25], LOSSCUT = 0.2;          // 残り証拠金が20%以下でロスカット
+const LEVS = [2, 5, 10, 25, 75, 100], LOSSCUT = 0.2;          // 残り証拠金が20%以下でロスカット
 const KEYS = Object.keys(PR.PAIRS);
 
 // ---- 保存先: DATABASE_URL があればPostgres、なければ data.json ----
