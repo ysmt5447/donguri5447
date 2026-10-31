@@ -6,7 +6,8 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const SECRET = process.env.SECRET || crypto.randomBytes(32).toString('hex');
-const START = { d: 100000, k: 0, gd: 0, gk: 0 };     // 初期資金
+const START = { d: 100000, k: 0, gd: 0 };
+const GOLD = 10000000;  // 金のどんぐり 1こ = 1,000万どんぐり（ずっと同じ）     // 初期資金
 const CLAIM_AMOUNT = 5000, CLAIM_INTERVAL = 3600e3;  // どんぐり拾い: 1時間ごと
 const LEVS = [2, 5, 10, 25], LOSSCUT = 0.2;          // 残り証拠金が20%以下でロスカット
 const KEYS = Object.keys(PR.PAIRS);
@@ -43,15 +44,27 @@ const wrap = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(e);
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
 const id = () => crypto.randomBytes(4).toString('hex');
 
-function norm(u) { u.positions = u.positions || []; u.alerts = u.alerts || []; u.notices = u.notices || []; u.history = u.history || []; u.lastChecked = u.lastChecked || Date.now(); return u; }
+function norm(u) {
+  u.positions = u.positions || []; u.alerts = u.alerts || []; u.notices = u.notices || []; u.history = u.history || []; u.lastChecked = u.lastChecked || Date.now();
+  if (u.v !== 2) { // 旧バージョン（金のくるみ・金の値動きあり）からの移行
+    u.positions = u.positions.filter((p) => { if (p.pair === 'KD') return true; u.wallet.d = r4(u.wallet.d + p.margin); return false; });
+    u.alerts = u.alerts.filter((a) => a.pair === 'KD');
+    if (u.wallet.gk > 0) u.wallet.d = r4(u.wallet.d + u.wallet.gk * 200000 * 150);
+    delete u.wallet.gk;
+    const f = u.wallet.gd - Math.floor(u.wallet.gd);
+    if (f > 0) { u.wallet.d = r4(u.wallet.d + f * GOLD); u.wallet.gd = Math.floor(u.wallet.gd); }
+    u.v = 2;
+  }
+  return u;
+}
 const pub = (u) => ({ name: u.name, wallet: u.wallet, history: u.history, lastClaim: u.lastClaim, positions: u.positions, alerts: u.alerts, notices: u.notices });
 const quotesAt = (t) => { const o = {}; KEYS.forEach((k) => { o[k] = PR.quote(k, t); }); return o; };
 const rate = (pair, qs) => (PR.PAIRS[pair].quote === 'k' ? qs.KD.mid : 1);
 function pnl(p, qs) { const q = qs[p.pair], cur = p.side === 'long' ? q.bid : q.ask; return p.units * (p.side === 'long' ? cur - p.entry : p.entry - cur) * rate(p.pair, qs); }
 const equity = (p, qs) => p.margin + pnl(p, qs);
 function valueOf(u, qs) {
-  const w = u.wallet, K = qs.KD.mid; let v = w.d + w.k * K + w.gd * qs.GDD.mid + w.gk * qs.GKK.mid * K;
-  (u.positions || []).forEach((p) => { v += Math.max(0, equity(p, qs)); }); return v;
+  const w = u.wallet, K = qs.KD.mid; let v = w.d + w.k * K + w.gd * GOLD + (w.gk || 0) * 30000000;
+  (u.positions || []).forEach((p) => { v += qs[p.pair] ? Math.max(0, equity(p, qs)) : p.margin; }); return v;
 }
 function note(u, t, text) { u.notices.unshift({ id: id(), t, text, seen: false }); u.notices = u.notices.slice(0, 30); }
 const fm = (x) => Math.round(x).toLocaleString('ja-JP');
@@ -93,7 +106,7 @@ app.get('/api/chart', (req, res) => {
   if (!PR.PAIRS[k]) return res.status(400).json({ error: 'pair?' });
   const now = Date.now() / 1000, pts = [];
   for (let i = 150; i >= 0; i--) pts.push(PR.quote(k, now - (range * i) / 150).mid);
-  res.json({ pts });
+  res.json({ now: Date.now(), pts });
 });
 
 app.post('/api/register', wrap(async (req, res) => {
@@ -118,7 +131,8 @@ app.post('/api/login', wrap(async (req, res) => {
 app.get('/api/me', need, wrap(async (req, res) => {
   await withLock(req.uname, async () => {
     const u = await store.get(req.uname); if (!u) return res.status(401).json({ error: 'ユーザーなし' });
-    if (settle(u, Date.now())) await store.set(u.name, u);
+    const dirty = u.v !== 2;
+    if (settle(u, Date.now()) || dirty) await store.set(u.name, u);
     res.json(pub(u));
   });
 }));
@@ -131,7 +145,7 @@ app.post('/api/seen', need, wrap(async (req, res) => {
 }));
 
 // 現物取引
-const TP = { KD: { b: 'k', q: 'd' }, GDD: { b: 'gd', q: 'd' }, GKK: { b: 'gk', q: 'k' } };
+const TP = { KD: { b: 'k', q: 'd' } };
 app.post('/api/trade', need, wrap(async (req, res) => {
   const { pair, side } = req.body || {}; const amount = r4(Number(req.body.amount)); const p = TP[pair];
   if (!p || !['buy', 'sell'].includes(side) || !(amount > 0)) return res.status(400).json({ error: '注文が正しくありません' });
@@ -140,6 +154,20 @@ app.post('/api/trade', need, wrap(async (req, res) => {
     if (side === 'buy') { cost = r4(amount * q.ask); if (w[p.q] < cost) return res.status(400).json({ error: '残高が足りません' }); w[p.q] = r4(w[p.q] - cost); w[p.b] = r4(w[p.b] + amount); }
     else { cost = r4(amount * q.bid); if (w[p.b] < amount) return res.status(400).json({ error: '持っている数が足りません' }); w[p.b] = r4(w[p.b] - amount); w[p.q] = r4(w[p.q] + cost); }
     u.history.unshift({ t: Date.now(), kind: 'spot', pair, side, amount, price: side === 'buy' ? q.ask : q.bid, total: cost });
+    u.history = u.history.slice(0, 50);
+    await store.set(u.name, u); res.json(pub(u));
+  });
+}));
+
+// 金のどんぐり：買う・売るだけ（1こ単位、ねだんは固定）
+app.post('/api/gold', need, wrap(async (req, res) => {
+  const { side } = req.body || {}; const units = Math.floor(Number(req.body.units));
+  if (!['buy', 'sell'].includes(side) || !(units >= 1) || units > 1000) return res.status(400).json({ error: '1こ以上の整数で入力してね' });
+  await withLock(req.uname, async () => {
+    const u = norm(await store.get(req.uname)), w = u.wallet, cost = units * GOLD;
+    if (side === 'buy') { if (w.d < cost) return res.status(400).json({ error: `どんぐりが足りません（${fm(cost)}どんぐり必要）` }); w.d = r4(w.d - cost); w.gd += units; }
+    else { if (w.gd < units) return res.status(400).json({ error: '金のどんぐりが足りません' }); w.gd -= units; w.d = r4(w.d + cost); }
+    u.history.unshift({ t: Date.now(), kind: 'gold', side, amount: units, price: GOLD, total: cost });
     u.history = u.history.slice(0, 50);
     await store.set(u.name, u); res.json(pub(u));
   });

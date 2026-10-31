@@ -14,7 +14,7 @@ button{cursor:pointer;background:var(--acc);color:#fff;border:0;font-weight:700}
 button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
 .login{max-width:360px;margin:60px auto;text-align:center}.login input{width:100%;margin:5px 0}.row{display:flex;gap:8px}.row>*{flex:1;min-width:0}
 .err{color:var(--dn);min-height:20px;font-size:13px}.top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px}
-.wal{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}@media(min-width:700px){.wal{grid-template-columns:repeat(4,1fr)}}
+.wal{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}@media(min-width:700px){.wal{grid-template-columns:repeat(3,1fr)}}
 .wal div{background:var(--bg);border-radius:10px;padding:8px}.wal b{display:block;font-size:16px;word-break:break-all}.wal small{color:var(--sub)}
 .pairs{display:grid;gap:8px;grid-template-columns:1fr}@media(min-width:700px){.pairs{grid-template-columns:repeat(3,1fr)}}
 .pair{border:2px solid var(--line);border-radius:12px;padding:10px;cursor:pointer;background:var(--card)}.pair.sel{border-color:var(--acc)}
@@ -33,16 +33,18 @@ canvas{width:100%;height:240px;display:block}
 .pane{display:none}
 </style></head><body><div id="toast"></div><div class="wrap" id="app"></div>
 <script>
-const NAMES={d:'どんぐり',k:'くるみ',gd:'金のどんぐり',gk:'金のくるみ'};
-const PAIRS={KD:{n:'くるみ/どんぐり',b:'k',q:'d'},GDD:{n:'金のどんぐり/どんぐり',b:'gd',q:'d'},GKK:{n:'金のくるみ/くるみ',b:'gk',q:'k'}};
+const NAMES={d:'どんぐり',k:'くるみ',gd:'金のどんぐり'};const GOLD=10000000;
+const PAIRS={KD:{n:'くるみ/どんぐり',b:'k',q:'d'}};const OLDN={GDD:'金のどんぐり',GKK:'金のくるみ'};
+const pn=k=>(PAIRS[k]||{n:OLDN[k]||k}).n;
 const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
-let token=localStorage.getItem('tk'),user=null,px={},prev={},sel='KD',range=300,pts=[],timers=[],mode='spot',btab='pos',shown=new Set();
+const sel='KD';let token=localStorage.getItem('tk'),user=null,px={},prev={},range=300,pts=[],chartNow=Date.now(),timers=[],mode='spot',btab='pos',shown=new Set();
 const fmt=(x,d=2)=>Number(x).toLocaleString('ja-JP',{maximumFractionDigits:d});
-const dg=k=>k=='KD'?3:0;
+const dg=()=>3;
 async function api(path,body){
   const r=await fetch('/api/'+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:body?JSON.stringify(body):undefined});
   const j=await r.json();if(!r.ok)throw new Error(j.error||'エラー');return j;
 }
+function say2(){}
 function toast(t){const d=document.createElement('div');d.textContent=t;d.onclick=()=>d.remove();$('#toast').appendChild(d);setTimeout(()=>d.remove(),9000);
   try{if(window.Notification&&Notification.permission=='granted')new Notification('どんぐりFX',{body:t})}catch{}}
 function loginView(){
@@ -57,8 +59,7 @@ function appView(){
   <div class="card"><div class="top"><h1>🌰 <span id="un"></span> さんのへや</h1><div><button class="ghost" id="cl">🌰 拾う(+5,000)</button> <button class="ghost" id="lo">ログアウト</button></div></div>
   <div class="wal" id="wal"></div><p style="margin:10px 0 4px;font-size:13px">ぜんぶの価値：<b id="tot"></b> どんぐり</p>
   <div style="font-size:12px;color:var(--sub)">目標：金のどんぐり 1こ（<span id="gp"></span>）</div><div class="bar"><i id="gb"></i></div></div>
-  <div class="pairs" id="pairs"></div>
-  <div class="main"><div class="card"><h2 id="ct"></h2><div class="tabs" id="tabs"></div><canvas id="cv"></canvas></div>
+  <div class="main"><div class="card"><h2 id="ct"></h2><div id="pr" style="font-size:26px;font-weight:800"></div><div class="tabs" id="tabs"></div><canvas id="cv"></canvas></div>
   <div class="card"><div class="tabs"><button data-m="spot">現物</button><button data-m="lev">レバレッジ</button></div><div id="q"></div>
    <div id="m-spot"><input id="amt" type="number" inputmode="decimal" min="0" step="any" value="1" style="width:100%;margin-top:8px">
     <div class="row" style="margin-top:6px"><button class="ghost" id="mx1">買える最大</button><button class="ghost" id="mx2">持ってる全部</button></div>
@@ -68,9 +69,11 @@ function appView(){
     <div class="bs"><button class="buy" id="lg">ロング(上がる)</button><button class="sell" id="st">ショート(下がる)</button></div>
     <div class="hint">証拠金の80%を失うと自動で決済(ロスカット)されます。見ていない間も判定されます。</div></div>
    <div id="msg"></div></div></div>
-  <div class="card" style="margin-top:12px"><div class="tabs" id="bt"><button data-b="pos">ポジション</button><button data-b="alert">アラート</button><button data-b="rank">ランキング</button><button data-b="hist">れきし</button><button data-b="note">おしらせ</button></div>
+  <div class="card" style="margin-top:12px"><h2>🏅 金のどんぐり屋さん</h2><div style="font-size:14px">1こ = <b>10,000,000</b> どんぐり（ねだんはずっと同じ）</div>
+   <div class="row" style="margin-top:8px"><input id="gq" type="number" inputmode="numeric" min="1" step="1" value="1"><button class="buy" id="gbuy">買う</button><button class="sell" id="gsell">売る</button></div><div id="gmsg" class="hint"></div></div>
+  <div class="card"><div class="tabs" id="bt"><button data-b="pos">ポジション</button><button data-b="alert">アラート</button><button data-b="rank">ランキング</button><button data-b="hist">れきし</button><button data-b="note">おしらせ</button></div>
    <div class="pane" id="b-pos"><div class="list" id="pl"></div></div>
-   <div class="pane" id="b-alert"><div class="row"><select id="ap"></select><select id="ad"><option value="above">以上になったら</option><option value="below">以下になったら</option></select></div>
+   <div class="pane" id="b-alert"><div class="row"><select id="ad"><option value="above">以上になったら</option><option value="below">以下になったら</option></select></div>
     <div class="row" style="margin-top:6px"><input id="apr" type="number" inputmode="decimal" step="any" placeholder="価格"><button id="aa">追加</button></div>
     <div class="hint">開いていない間に条件を満たしても、次に開いたとき「おしらせ」に届きます。</div><div class="list" id="al" style="margin-top:6px"></div></div>
    <div class="pane" id="b-rank"><div class="list" id="rl">読み込み中…</div></div>
@@ -87,9 +90,9 @@ function appView(){
   $('#mx2').onclick=()=>{$('#amt').value=user.wallet[PAIRS[sel].b]};
   $('#un2').oninput=$('#lv').onchange=renderLq;$('#amt').oninput=renderQuote;
   $('#aa').onclick=()=>{if(window.Notification&&Notification.permission=='default')Notification.requestPermission();
-    act(()=>api('alert',{pair:$('#ap').value,dir:$('#ad').value,price:$('#apr').value}),'アラートを追加しました')};
-  $('#ap').innerHTML=Object.keys(PAIRS).map(k=>`<option value="${k}">${PAIRS[k].n}</option>`).join('');
-  $('#pairs').onclick=e=>{const el=e.target.closest('[data-p]');if(el){sel=el.dataset.p;loadChart();render()}};
+    act(()=>api('alert',{pair:'KD',dir:$('#ad').value,price:$('#apr').value}),'アラートを追加しました')};
+    $('#gbuy').onclick=()=>act(()=>api('gold',{side:'buy',units:$('#gq').value}),'金のどんぐりを買いました！','#gmsg');
+  $('#gsell').onclick=()=>act(()=>api('gold',{side:'sell',units:$('#gq').value}),'金のどんぐりを売りました','#gmsg');
   $('#pl').onclick=e=>{const b=e.target.closest('[data-c]');if(b)act(()=>api('close',{id:b.dataset.c}),'決済しました')};
   $('#al').onclick=e=>{const b=e.target.closest('[data-d]');if(b)act(()=>api('alert/del',{id:b.dataset.d}),'消しました')};
   $('#bt').onclick=e=>{const b=e.target.closest('[data-b]');if(b){btab=b.dataset.b;if(btab=='rank')loadRank();render()}};
@@ -98,12 +101,12 @@ function appView(){
   $$('[data-r]').forEach(b=>b.onclick=()=>{range=+b.dataset.r;loadChart();render()});
   render();loadChart();
 }
-async function act(fn,ok){try{user=await fn();say(ok)}catch(e){say(e.message,1)}}
-function say(t,bad){const m=$('#msg');if(m){m.textContent=t;m.style.color=bad?'var(--dn)':'var(--up)'}render()}
-const rate=p=>PAIRS[p].q=='k'&&px.KD?px.KD.mid:1;
-function pnl(o){const q=px[o.pair];if(!q)return 0;const cur=o.side=='long'?q.bid:q.ask;return o.units*(o.side=='long'?cur-o.entry:o.entry-cur)*rate(o.pair)}
-function total(){const w=user.wallet,K=px.KD?px.KD.mid:0,G=px.GDD?px.GDD.mid:0,GK=px.GKK?px.GKK.mid:0;
-  return w.d+w.k*K+w.gd*G+w.gk*GK*K+user.positions.reduce((s,o)=>s+Math.max(0,o.margin+pnl(o)),0)}
+async function act(fn,ok,el){try{user=await fn();say(ok,0,el)}catch(e){say(e.message,1,el)}}
+function say(t,bad,el){const m=$(el||'#msg');if(m){m.textContent=t;m.style.color=bad?'var(--dn)':'var(--up)'}render()}
+const rate=()=>1;
+function pnl(o){const q=px[o.pair];if(!q||!PAIRS[o.pair])return 0;const cur=o.side=='long'?q.bid:q.ask;return o.units*(o.side=='long'?cur-o.entry:o.entry-cur)*rate(o.pair)}
+function total(){const w=user.wallet,K=px.KD?px.KD.mid:0;
+  return w.d+w.k*K+w.gd*GOLD+user.positions.reduce((s,o)=>s+Math.max(0,o.margin+pnl(o)),0)}
 function renderQuote(){const q=px[sel],p=PAIRS[sel];if(!q)return;const a=+$('#amt').value||0;
   $('#q').innerHTML=`買値 <b>${fmt(q.ask,3)}</b> ／ 売値 <b>${fmt(q.bid,3)}</b><br><small style="color:var(--sub)">${mode=='spot'?`買うと ${fmt(a*q.ask,2)} ${NAMES[p.q]}`:''}</small>`;renderLq()}
 function renderLq(){const q=px[sel];if(!q||!$('#lq'))return;const u=+$('#un2').value||0,l=+$('#lv').value;const v=u*q.mid*rate(sel);
@@ -113,35 +116,48 @@ function render(){
   $('#wal').innerHTML=Object.keys(NAMES).map(k=>`<div><small>${NAMES[k]}</small><b>${fmt(w[k],4)}</b></div>`).join('');
   $('#tot').textContent=fmt(total(),0);$('#gb').style.width=Math.min(100,w.gd*100)+'%';$('#gp').textContent=fmt(Math.min(100,w.gd*100),1)+'%';
   $('#win').innerHTML=w.gd>=1?'<div class="win">🎉 金のどんぐりをゲット！おめでとう！ 🎉</div>':'';
-  $('#pairs').innerHTML=Object.keys(PAIRS).map(k=>{const q=px[k];if(!q)return'';const up=q.mid>=(prev[k]||q.mid);
-    return`<div class="pair ${k==sel?'sel':''}" data-p="${k}"><small>${PAIRS[k].n}</small><div class="p ${up?'up':'dn'}">${fmt(q.mid,dg(k))}</div><small>売${fmt(q.bid,dg(k))} / 買${fmt(q.ask,dg(k))}</small></div>`}).join('');
-  $('#ct').textContent=PAIRS[sel].n;
+  const q0=px.KD;if(q0){const up=q0.mid>=(prev.KD||q0.mid);$('#pr').innerHTML=`<span class="${up?'up':'dn'}">${fmt(q0.mid,3)}</span> <small style="font-size:12px;color:var(--sub);font-weight:400">売${fmt(q0.bid,3)} / 買${fmt(q0.ask,3)}</small>`}
+  $('#ct').textContent=PAIRS[sel].n+'（1くるみ = ○どんぐり）';
   $$('[data-r]').forEach(b=>b.classList.toggle('on',+b.dataset.r==range));
   $$('[data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m==mode));
   $$('[data-b]').forEach(b=>b.classList.toggle('on',b.dataset.b==btab));
   $$('.pane').forEach(p=>p.style.display=p.id=='b-'+btab?'block':'none');
   $('#m-spot').style.display=mode=='spot'?'block':'none';$('#m-lev').style.display=mode=='lev'?'block':'none';
   renderQuote();
-  $('#pl').innerHTML=user.positions.map(o=>{const pl=pnl(o),eq=o.margin+pl;return`<div><span>${PAIRS[o.pair].n}<br><small>${o.side=='long'?'ロング':'ショート'} ${fmt(o.units,4)} ×${o.lev}　建値 ${fmt(o.entry,dg(o.pair))}</small></span>
+  $('#pl').innerHTML=user.positions.map(o=>{const pl=pnl(o),eq=o.margin+pl;return`<div><span>${pn(o.pair)}<br><small>${o.side=='long'?'ロング':'ショート'} ${fmt(o.units,4)} ×${o.lev}　建値 ${fmt(o.entry,dg(o.pair))}</small></span>
     <span style="text-align:right"><b class="${pl>=0?'up':'dn'}">${pl>=0?'+':''}${fmt(pl,0)}</b><br><small>証拠金 ${fmt(o.margin,0)} → ${fmt(Math.max(0,eq),0)}</small></span><button data-c="${o.id}">決済</button></div>`}).join('')||'<small>ポジションはありません</small>';
-  $('#al').innerHTML=user.alerts.map(a=>`<div><span>${PAIRS[a.pair].n} が ${fmt(a.price,2)} ${a.dir=='above'?'以上':'以下'}</span><button class="ghost" data-d="${a.id}">消す</button></div>`).join('')||'<small>アラートはありません</small>';
-  $('#hl').innerHTML=user.history.map(h=>{const t=new Date(h.t).toLocaleString('ja-JP'),n=PAIRS[h.pair].n;
-    const s=h.kind=='open'?`【新規】${n} ${h.side=='long'?'ロング':'ショート'} ${fmt(h.units,4)} ×${h.lev} @${fmt(h.price,2)}`:(h.kind=='close'||h.kind=='losscut')?`【${h.kind=='close'?'決済':'ロスカット'}】${n} 損益 ${h.pnl>=0?'+':''}${fmt(h.pnl,0)}どんぐり`:`${n} ${h.side=='buy'?'買':'売'} ${fmt(h.amount,4)} @${fmt(h.price,2)}`;
+  $('#al').innerHTML=user.alerts.map(a=>`<div><span>${pn(a.pair)} が ${fmt(a.price,2)} ${a.dir=='above'?'以上':'以下'}</span><button class="ghost" data-d="${a.id}">消す</button></div>`).join('')||'<small>アラートはありません</small>';
+  $('#hl').innerHTML=user.history.map(h=>{const t=new Date(h.t).toLocaleString('ja-JP'),n=h.pair?pn(h.pair):'';
+    const s=h.kind=='gold'?`【金のどんぐり】${h.side=='buy'?'買い':'売り'} ${fmt(h.amount,0)}こ`:h.kind=='open'?`【新規】${n} ${h.side=='long'?'ロング':'ショート'} ${fmt(h.units,4)} ×${h.lev} @${fmt(h.price,2)}`:(h.kind=='close'||h.kind=='losscut')?`【${h.kind=='close'?'決済':'ロスカット'}】${n} 損益 ${h.pnl>=0?'+':''}${fmt(h.pnl,0)}どんぐり`:`${n} ${h.side=='buy'?'買':'売'} ${fmt(h.amount,4)} @${fmt(h.price,2)}`;
     return`<div><span>${s}</span><small>${t}</small></div>`}).join('')||'<small>まだ取引なし</small>';
   $('#nl').innerHTML=user.notices.map(n=>`<div><span>${n.text}</span><small>${new Date(n.t).toLocaleString('ja-JP')}</small></div>`).join('')||'<small>おしらせはありません</small>';
   drawChart();
 }
 async function loadRank(){try{const j=await api('ranking');
   $('#rl').innerHTML=j.top.map((x,i)=>`<div><span>${i+1}. ${x.gold?'🏆':'🌰'} ${x.name.replace(/</g,'&lt;')}</span><b>${fmt(x.total,0)}</b></div>`).join('')+(j.me&&j.me.rank>20?`<div><span>…${j.me.rank}位 あなた</span><b>${fmt(j.me.total,0)}</b></div>`:'')+`<small>参加者 ${j.count}人（どんぐり換算）</small>`}catch{}}
-async function loadChart(){try{pts=(await api('chart?pair='+sel+'&range='+range)).pts;drawChart()}catch{}}
+async function loadChart(){try{const j=await api('chart?pair='+sel+'&range='+range);pts=j.pts;chartNow=j.now;drawChart()}catch{}}
+function tfmt(ms){const d=new Date(ms),o={hour:'2-digit',minute:'2-digit',hour12:false};
+  if(range<=300)o.second='2-digit';if(range>86400){return d.toLocaleDateString('ja-JP',{month:'numeric',day:'numeric'})+' '+d.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',hour12:false})}
+  return d.toLocaleTimeString('ja-JP',o)}
 function drawChart(){
   const c=$('#cv');if(!c||!pts.length)return;const dpr=devicePixelRatio||1,W=c.clientWidth,H=c.clientHeight;c.width=W*dpr;c.height=H*dpr;
-  const g=c.getContext('2d');g.scale(dpr,dpr);const all=pts.concat(px[sel]?[px[sel].mid]:[]);let mn=Math.min(...all),mx=Math.max(...all);const pad=(mx-mn)*.1||1;mn-=pad;mx+=pad;
-  const X=i=>i/(all.length-1)*(W-60),Y=v=>H-(v-mn)/(mx-mn)*(H-10)-5;
-  const css=getComputedStyle(document.body),col=css.getPropertyValue(all[all.length-1]>=all[0]?'--up':'--dn');
-  g.font='11px sans-serif';g.fillStyle=css.getPropertyValue('--sub');g.strokeStyle=css.getPropertyValue('--line');
-  for(let i=0;i<4;i++){const v=mn+(mx-mn)*i/3,y=Y(v);g.beginPath();g.moveTo(0,y);g.lineTo(W-58,y);g.stroke();g.fillText(fmt(v,sel=='KD'?2:0),W-56,y+4)}
+  const g=c.getContext('2d');g.scale(dpr,dpr);const all=pts.concat(px[sel]?[px[sel].mid]:[]);
+  const ps=user.positions.filter(o=>o.pair==sel).map(o=>{const d=0.8*o.margin/o.units;return{o,cut:o.side=='long'?o.entry-d:o.entry+d}});
+  let mn=Math.min(...all,...ps.map(p=>p.o.entry)),mx=Math.max(...all,...ps.map(p=>p.o.entry));const pad=(mx-mn)*.1||1;mn-=pad;mx+=pad;
+  const PW=W-62,PH=H-22,X=i=>i/(all.length-1)*PW,Y=v=>PH-(v-mn)/(mx-mn)*(PH-10)-5;
+  const css=getComputedStyle(document.body),S=n=>css.getPropertyValue(n),col=S(all[all.length-1]>=all[0]?'--up':'--dn');
+  g.font='11px sans-serif';g.lineWidth=1;
+  for(let i=0;i<4;i++){const v=mn+(mx-mn)*i/3,y=Y(v);g.strokeStyle=S('--line');g.beginPath();g.moveTo(0,y);g.lineTo(PW,y);g.stroke();g.fillStyle=S('--sub');g.textAlign='left';g.fillText(fmt(v,2),PW+4,y+4)}
+  // 横軸（時間）
+  const t1=chartNow,t0=chartNow-range*1000;g.fillStyle=S('--sub');
+  const N=W<500?2:4;for(let i=0;i<=N;i++){const x=PW*i/N;g.textAlign=i==0?'left':i==N?'right':'center';g.fillText(tfmt(t0+(t1-t0)*i/N),x,H-5);g.strokeStyle=S('--line');g.beginPath();g.moveTo(x,PH);g.lineTo(x,PH+4);g.stroke()}
+  // 価格線
   g.beginPath();all.forEach((v,i)=>i?g.lineTo(X(i),Y(v)):g.moveTo(X(i),Y(v)));g.strokeStyle=col;g.lineWidth=2;g.stroke();
+  // レバレッジの建値・ロスカットライン
+  ps.forEach(({o,cut})=>{const lc=S(o.side=='long'?'--up':'--dn'),y=Y(o.entry);g.lineWidth=1.5;g.strokeStyle=lc;g.setLineDash([6,4]);g.beginPath();g.moveTo(0,y);g.lineTo(PW,y);g.stroke();
+    g.fillStyle=lc;g.textAlign='left';g.fillText((o.side=='long'?'ロング':'ショート')+' ×'+o.lev+' 建値 '+fmt(o.entry,2),4,y-4);
+    if(cut>mn&&cut<mx){const yc=Y(cut);g.setLineDash([2,4]);g.strokeStyle=S('--dn');g.beginPath();g.moveTo(0,yc);g.lineTo(PW,yc);g.stroke();g.fillStyle=S('--dn');g.fillText('ロスカット '+fmt(cut,2),4,yc-4)}
+    g.setLineDash([])});
 }
 async function pollPrices(){try{const j=await api('prices');for(const k in j.prices){prev[k]=px[k]?px[k].mid:j.prices[k].mid;px[k]=j.prices[k]}render()}catch{}}
 async function pollMe(){try{user=await api('me');const un=user.notices.filter(n=>!n.seen&&!shown.has(n.id));
