@@ -1,4 +1,6 @@
 const express = require('express'), crypto = require('crypto'), path = require('path');
+const Orders = require('./orders.js');
+const LOCAL_TEST = process.env.LOCAL_TEST === '1';
 const PR = require('./price.js');
 PR.setSeed(process.env.PRICE_SEED || 'change-me');
 const app = express();
@@ -14,7 +16,14 @@ const KEYS = Object.keys(PR.PAIRS);
 
 // ---- 保存先: DATABASE_URL があればPostgres、なければ data.json ----
 let store;
-if (process.env.DATABASE_URL) {
+if (LOCAL_TEST) {
+  const db = new Map();
+  store = {
+    async get(n) { return db.has(n) ? structuredClone(db.get(n)) : null; },
+    async set(n, d) { db.set(n, structuredClone(d)); },
+    async all() { return [...db.values()].map(d => structuredClone(d)); },
+  };
+} else if (process.env.DATABASE_URL) {
   const { Pool } = require('pg');
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
   const ready = pool.query('create table if not exists users(name text primary key, data jsonb not null)');
@@ -45,7 +54,7 @@ const r4 = (x) => Math.round(x * 1e4) / 1e4;
 const id = () => crypto.randomBytes(4).toString('hex');
 
 function norm(u) {
-  u.positions = u.positions || []; u.alerts = u.alerts || []; u.notices = u.notices || []; u.history = u.history || []; u.lastChecked = u.lastChecked || Date.now();
+  u.orders = u.orders || []; u.positions = u.positions || []; u.alerts = u.alerts || []; u.notices = u.notices || []; u.history = u.history || []; u.lastChecked = u.lastChecked || Date.now();
   if (u.v !== 2) { // 旧バージョン（金のくるみ・金の値動きあり）からの移行
     u.positions = u.positions.filter((p) => { if (p.pair === 'KD') return true; u.wallet.d = r4(u.wallet.d + p.margin); return false; });
     u.alerts = u.alerts.filter((a) => a.pair === 'KD');
@@ -57,7 +66,7 @@ function norm(u) {
   }
   return u;
 }
-const pub = (u) => ({ name: u.name, wallet: u.wallet, history: u.history, lastClaim: u.lastClaim, positions: u.positions, alerts: u.alerts, notices: u.notices });
+const pub = (u) => ({ name: u.name, wallet: u.wallet, history: u.history, lastClaim: u.lastClaim, positions: u.positions, orders: u.orders || [], alerts: u.alerts, notices: u.notices });
 const quotesAt = (t) => { const o = {}; KEYS.forEach((k) => { o[k] = PR.quote(k, t); }); return o; };
 const rate = (pair, qs) => (PR.PAIRS[pair].quote === 'k' ? qs.KD.mid : 1);
 function pnl(p, qs) { const q = qs[p.pair], cur = p.side === 'long' ? q.bid : q.ask; return p.units * (p.side === 'long' ? cur - p.entry : p.entry - cur) * rate(p.pair, qs); }
@@ -72,34 +81,40 @@ const fm = (x) => Math.round(x).toLocaleString('ja-JP');
 // ---- 見ていない間に起きたこと（ロスカット・アラート）を、過去にさかのぼって判定 ----
 function settle(u, now) {
   norm(u);
-  const last = Math.max(u.lastChecked, now - 14 * 864e5); u.lastChecked = now;
-  if (!u.positions.length && !u.alerts.length) return false;
-  const step = Math.max(2, (now - last) / 1000 / 20000); let t = last / 1000;
-  while (u.positions.length || u.alerts.length) {
-    t = Math.min(t + step, now / 1000);
-    const qs = quotesAt(t), ms = t * 1000;
+  // Fixed UTC grid: results do not depend on how often a player opens the page.
+  const end = Math.floor(now / 2000) * 2000;
+  const last = Math.max(Math.floor(u.lastChecked / 2000) * 2000, end - 14 * 864e5);
+  u.lastChecked = Math.max(u.lastChecked, end);
+  if (!u.positions.length && !u.alerts.length && !u.orders.length) return false;
+  for (let ms = last + 2000; ms <= end; ms += 2000) {
+    const qs = quotesAt(ms / 1000);
     u.alerts = u.alerts.filter((a) => {
       if (a.t > ms) return true;
       const m = qs[a.pair].mid, hit = a.dir === 'above' ? m >= a.price : m <= a.price;
       if (hit) note(u, ms, `🔔 ${PR.PAIRS[a.pair].name} が ${fm(a.price)} ${a.dir === 'above' ? '以上' : '以下'}になりました（${fm(m)}）`);
       return !hit;
     });
-    u.positions = u.positions.filter((p) => {
-      if (p.t > ms) return true;
-      const e = equity(p, qs);
-      if (e > p.margin * LOSSCUT) return true;
-      u.wallet.d = r4(u.wallet.d + Math.max(0, e));
-      u.history.unshift({ t: ms, kind: 'losscut', pair: p.pair, pnl: r4(Math.max(0, e) - p.margin) });
-      note(u, ms, `⚠️ ロスカット！ ${PR.PAIRS[p.pair].name} の${p.side === 'long' ? 'ロング' : 'ショート'}が自動で決済されました`);
-      return false;
-    });
-    if (t >= now / 1000) break;
+    Orders.tick(u, qs, ms, { id, note, equity, rate, lossCut: LOSSCUT });
+    if (!u.positions.length && !u.alerts.length && !u.orders.length) break;
   }
   u.history = u.history.slice(0, 50);
   return true;
 }
 
+async function account(req) {
+  const u = norm(await store.get(req.uname));
+  settle(u, Date.now());
+  await store.set(u.name, u);
+  return u;
+}
+const levelValue = x => x === '' || x == null ? null : Number(x);
+
 // ---- API ----
+app.get('/api/news', (req, res) => {
+  const now = Date.now();
+  res.set('Cache-Control', 'no-store');
+  res.json({ now, simulated: true, items: PR.news(now / 1000) });
+});
 app.get('/api/prices', (req, res) => res.json({ now: Date.now(), prices: quotesAt(Date.now() / 1000) }));
 app.get('/api/chart', (req, res) => {
   const k = req.query.pair, range = Math.min(Math.max(Number(req.query.range) || 300, 60), 604800 * 2);
@@ -143,7 +158,7 @@ app.get('/api/me', need, wrap(async (req, res) => {
 
 app.post('/api/seen', need, wrap(async (req, res) => {
   await withLock(req.uname, async () => {
-    const u = norm(await store.get(req.uname)); u.notices.forEach((n) => { n.seen = true; });
+    const u = await account(req); u.notices.forEach((n) => { n.seen = true; });
     await store.set(u.name, u); res.json(pub(u));
   });
 }));
@@ -152,9 +167,9 @@ app.post('/api/seen', need, wrap(async (req, res) => {
 const TP = { KD: { b: 'k', q: 'd' } };
 app.post('/api/trade', need, wrap(async (req, res) => {
   const { pair, side } = req.body || {}; const amount = r4(Number(req.body.amount)); const p = TP[pair];
-  if (!p || !['buy', 'sell'].includes(side) || !(amount > 0)) return res.status(400).json({ error: '注文が正しくありません' });
+  if (!p || !['buy', 'sell'].includes(side) || !(Number.isFinite(amount) && amount > 0)) return res.status(400).json({ error: '注文が正しくありません' });
   await withLock(req.uname, async () => {
-    const u = norm(await store.get(req.uname)), w = u.wallet, q = PR.quote(pair, Date.now() / 1000); let cost;
+    const u = await account(req), w = u.wallet, q = PR.quote(pair, Date.now() / 1000); let cost;
     if (side === 'buy') { cost = r4(amount * q.ask); if (w[p.q] < cost) return res.status(400).json({ error: '残高が足りません' }); w[p.q] = r4(w[p.q] - cost); w[p.b] = r4(w[p.b] + amount); }
     else { cost = r4(amount * q.bid); if (w[p.b] < amount) return res.status(400).json({ error: '持っている数が足りません' }); w[p.b] = r4(w[p.b] - amount); w[p.q] = r4(w[p.q] + cost); }
     u.history.unshift({ t: Date.now(), kind: 'spot', pair, side, amount, price: side === 'buy' ? q.ask : q.bid, total: cost });
@@ -168,7 +183,7 @@ app.post('/api/gold', need, wrap(async (req, res) => {
   const { side } = req.body || {}; const units = Math.floor(Number(req.body.units));
   if (!['buy', 'sell'].includes(side) || !(units >= 1) || units > 1000) return res.status(400).json({ error: '1こ以上の整数で入力してね' });
   await withLock(req.uname, async () => {
-    const u = norm(await store.get(req.uname)), w = u.wallet, cost = units * GOLD;
+    const u = await account(req), w = u.wallet, cost = units * GOLD;
     if (side === 'buy') { if (w.d < cost) return res.status(400).json({ error: `どんぐりが足りません（${fm(cost)}どんぐり必要）` }); w.d = r4(w.d - cost); w.gd += units; }
     else { if (w.gd < units) return res.status(400).json({ error: '金のどんぐりが足りません' }); w.gd -= units; w.d = r4(w.d + cost); }
     u.history.unshift({ t: Date.now(), kind: 'gold', side, amount: units, price: GOLD, total: cost });
@@ -180,16 +195,19 @@ app.post('/api/gold', need, wrap(async (req, res) => {
 // レバレッジ取引：新規
 app.post('/api/open', need, wrap(async (req, res) => {
   const { pair, side } = req.body || {}; const units = r4(Number(req.body.units)), lev = Number(req.body.lev);
-  if (!PR.PAIRS[pair] || !['long', 'short'].includes(side) || !(units > 0) || !LEVS.includes(lev)) return res.status(400).json({ error: '注文が正しくありません' });
+  if (!PR.PAIRS[pair] || !['long', 'short'].includes(side) || !(Number.isFinite(units) && units > 0) || !LEVS.includes(lev)) return res.status(400).json({ error: '注文が正しくありません' });
   await withLock(req.uname, async () => {
-    const u = norm(await store.get(req.uname)); settle(u, Date.now());
+    const u = await account(req);
     if (u.positions.length >= 10) return res.status(400).json({ error: 'ポジションは10個までです' });
     const now = Date.now(), qs = quotesAt(now / 1000), q = qs[pair], entry = side === 'long' ? q.ask : q.bid;
+    const tp = levelValue(req.body.tp), sl = levelValue(req.body.sl);
+    const error = Orders.levels(side, entry, tp, sl);
+    if (error) return res.status(400).json({ error });
     const margin = r4((units * entry * rate(pair, qs)) / lev);
     if (margin < 1) return res.status(400).json({ error: '数量が小さすぎます' });
     if (u.wallet.d < margin) return res.status(400).json({ error: `証拠金が足りません（必要：${fm(margin)}どんぐり）` });
     u.wallet.d = r4(u.wallet.d - margin);
-    u.positions.push({ id: id(), pair, side, units, lev, entry, margin, t: now });
+    u.positions.push({ id: id(), pair, side, units, lev, entry, margin, t: now, tp, sl });
     u.history.unshift({ t: now, kind: 'open', pair, side, units, lev, price: entry });
     u.history = u.history.slice(0, 50);
     await store.set(u.name, u); res.json(pub(u));
@@ -199,7 +217,7 @@ app.post('/api/open', need, wrap(async (req, res) => {
 // レバレッジ取引：決済
 app.post('/api/close', need, wrap(async (req, res) => {
   await withLock(req.uname, async () => {
-    const u = norm(await store.get(req.uname)); settle(u, Date.now());
+    const u = await account(req);
     const i = u.positions.findIndex((p) => p.id === (req.body || {}).id);
     if (i < 0) { await store.set(u.name, u); return res.status(400).json({ error: 'そのポジションはもうありません（ロスカットされたかも）' }); }
     const p = u.positions[i], e = equity(p, quotesAt(Date.now() / 1000));
@@ -210,12 +228,52 @@ app.post('/api/close', need, wrap(async (req, res) => {
   });
 }));
 
+// Pending leveraged entries and position-level OCO exits.
+app.post('/api/order', need, wrap(async (req, res) => {
+  await withLock(req.uname, async () => {
+    const u = await account(req), { pair, side, type } = req.body;
+    const units = r4(Number(req.body.units)), lev = Number(req.body.lev), price = Number(req.body.price);
+    const tp = levelValue(req.body.tp), sl = levelValue(req.body.sl);
+    if (!PR.PAIRS[pair] || !['long', 'short'].includes(side) || !['limit', 'stop'].includes(type) || !Orders.positive(units) || !Orders.positive(price) || !LEVS.includes(lev)) return res.status(400).json({ error: '注文が正しくありません' });
+    const error = Orders.levels(side, price, tp, sl);
+    if (error) return res.status(400).json({ error });
+    if (u.orders.length >= 20) return res.status(400).json({ error: '予約注文は20件までです' });
+    const now = Date.now(), q = PR.quote(pair, now / 1000);
+    if (Orders.hit({ side, type, price }, q)) return res.status(400).json({ error: '現在値ですでに条件を満たしています。予約価格を変更するか成行を使ってください' });
+    const margin = r4(units * price / lev);
+    if (!Number.isFinite(margin) || margin < 1 || margin > u.wallet.d) return res.status(400).json({ error: '必要証拠金は1以上、現在の残高以下にしてください' });
+    u.orders.push({ id: id(), pair, side, type, price, units, lev, tp, sl, t: now, expires: now + 14 * 864e5 });
+    await store.set(u.name, u); res.json(pub(u));
+  });
+}));
+app.post('/api/order/cancel', need, wrap(async (req, res) => {
+  await withLock(req.uname, async () => {
+    const u = await account(req);
+    const i = u.orders.findIndex(o => o.id === req.body.id);
+    if (i < 0) return res.status(400).json({ error: 'その注文は成立・失効・取消済みです' });
+    u.orders.splice(i, 1); await store.set(u.name, u); res.json(pub(u));
+  });
+}));
+app.post('/api/protection', need, wrap(async (req, res) => {
+  await withLock(req.uname, async () => {
+    const u = await account(req), p = u.positions.find(p => p.id === req.body.id);
+    if (!p) return res.status(400).json({ error: 'そのポジションは決済済みです' });
+    const tp = levelValue(req.body.tp), sl = levelValue(req.body.sl), q = PR.quote(p.pair, Date.now() / 1000);
+    const error = Orders.levels(p.side, p.side === 'long' ? q.bid : q.ask, tp, sl);
+    if (error) return res.status(400).json({ error });
+    p.tp = tp; p.sl = sl;
+    // Do not apply freshly changed protection retroactively to an earlier tick.
+    p.protectionT = Date.now();
+    await store.set(u.name, u); res.json(pub(u));
+  });
+}));
+
 // 価格アラート
 app.post('/api/alert', need, wrap(async (req, res) => {
   const { pair, dir } = req.body || {}, price = Number(req.body.price);
   if (!PR.PAIRS[pair] || !['above', 'below'].includes(dir) || !(price > 0) || !isFinite(price)) return res.status(400).json({ error: 'アラートの内容が正しくありません' });
   await withLock(req.uname, async () => {
-    const u = norm(await store.get(req.uname)); settle(u, Date.now());
+    const u = await account(req);
     if (u.alerts.length >= 10) return res.status(400).json({ error: 'アラートは10個までです' });
     u.alerts.push({ id: id(), pair, dir, price, t: Date.now() });
     await store.set(u.name, u); res.json(pub(u));
@@ -223,7 +281,7 @@ app.post('/api/alert', need, wrap(async (req, res) => {
 }));
 app.post('/api/alert/del', need, wrap(async (req, res) => {
   await withLock(req.uname, async () => {
-    const u = norm(await store.get(req.uname)); u.alerts = u.alerts.filter((a) => a.id !== (req.body || {}).id);
+    const u = await account(req); u.alerts = u.alerts.filter((a) => a.id !== (req.body || {}).id);
     await store.set(u.name, u); res.json(pub(u));
   });
 }));
@@ -242,11 +300,21 @@ app.get('/api/ranking', need, wrap(async (req, res) => {
 
 app.post('/api/claim', need, wrap(async (req, res) => {
   await withLock(req.uname, async () => {
-    const u = norm(await store.get(req.uname)), now = Date.now();
+    const u = await account(req), now = Date.now();
     if (now - u.lastClaim < CLAIM_INTERVAL) return res.status(400).json({ error: 'まだ落ちてないみたい（1時間に1回）' });
     u.wallet.d = r4(u.wallet.d + CLAIM_AMOUNT); u.lastClaim = now;
     await store.set(u.name, u); res.json(pub(u));
   });
 }));
 
-app.listen(process.env.PORT || 3000, () => console.log('donguri-fx running'));
+async function boot() {
+  if (LOCAL_TEST) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    await store.set('test', norm({ name: 'test', salt, hash: hashPw('5447', salt), wallet: { ...START }, lastClaim: 0 }));
+  }
+  const port = process.env.PORT || 3000;
+  app.listen(port, LOCAL_TEST ? '127.0.0.1' : '0.0.0.0', () => {
+    console.log(`donguri-fx running: http://127.0.0.1:${port}${LOCAL_TEST ? ' (local test / in-memory storage)' : ''}`);
+  });
+}
+boot().catch(e => { console.error(e); process.exitCode = 1; });

@@ -30,7 +30,7 @@ canvas{width:100%;height:240px;display:block}
 #msg{min-height:20px;font-size:13px;margin-top:6px}.hint{font-size:12px;color:var(--sub);margin-top:6px}
 #toast{position:fixed;top:8px;left:8px;right:8px;z-index:9;display:flex;flex-direction:column;gap:6px;align-items:center}
 #toast div{background:var(--acc);color:#fff;padding:10px 14px;border-radius:12px;max-width:520px;font-size:14px;box-shadow:0 4px 14px #0004;cursor:pointer}
-.pane{display:none}
+.pane{display:none}label{display:block;font-size:12px;color:var(--sub);margin-top:8px}label input,label select{display:block;width:100%;margin-top:4px}.list>div{flex-wrap:wrap}
 </style></head><body><div id="toast"></div><div class="wrap" id="app"></div>
 <script>
 const NAMES={d:'どんぐり',k:'くるみ',gd:'金のどんぐり'};const GOLD=10000000;
@@ -66,13 +66,22 @@ function appView(){
     <div class="bs"><button class="buy" id="by">買う</button><button class="sell" id="sl">売る</button></div></div>
    <div id="m-lev" style="display:none"><div class="row" style="margin-top:8px"><input id="un2" type="number" inputmode="decimal" min="0" step="any" value="1"><select id="lv"><option>2</option><option>5</option><option selected>10</option><option>25</option><option>75</option><option>100</option></select></div>
     <div class="hint">左：数量　右：レバレッジ倍率</div><div id="lq" class="hint"></div>
+    <label>注文方法<select id="otype"><option value="market">成行（今の価格）</option><option value="limit">指値（有利な価格を待つ）</option><option value="stop">逆指値（価格を超えたら入る）</option></select></label>
+    <label id="entry-label" style="display:none">予約価格<input id="entry-price" type="number" min="0" step="any" placeholder="例：148"></label>
+    <div class="row"><label>利確価格（任意）<input id="entry-tp" type="number" min="0" step="any" placeholder="指定なし"></label><label>損切り価格（任意）<input id="entry-sl" type="number" min="0" step="any" placeholder="指定なし"></label></div>
+    <div class="hint">買いはAsk、売りはBidで判定。予約は14日間有効です。証拠金は成立時に引き落とし、不足時は失効します。</div>
     <div class="bs"><button class="buy" id="lg">ロング(上がる)</button><button class="sell" id="st">ショート(下がる)</button></div>
     <div class="hint">証拠金の80%を失うと自動で決済(ロスカット)されます。見ていない間も判定されます。</div></div>
    <div id="msg"></div></div></div>
+  <div class="card" style="margin-top:12px"><h2>📰 森のマーケットニュース</h2><div class="hint">相場とニュースは全プレイヤー共通です。</div><div class="hint">ゲーム内の架空ニュースです。発表後の相場に影響しますが、ほかの値動きも重なるため、見出しの方向どおりに動くとは限りません。</div><div id="news" class="list" style="margin-top:8px" aria-live="polite">読み込み中…</div></div>
   <div class="card" style="margin-top:12px"><h2>🏅 金のどんぐり屋さん</h2><div style="font-size:14px">1こ = <b>10,000,000</b> どんぐり（ねだんはずっと同じ）</div>
    <div class="row" style="margin-top:8px"><input id="gq" type="number" inputmode="numeric" min="1" step="1" value="1"><button class="buy" id="gbuy">買う</button><button class="sell" id="gsell">売る</button></div><div id="gmsg" class="hint"></div></div>
-  <div class="card"><div class="tabs" id="bt"><button data-b="pos">ポジション</button><button data-b="alert">アラート</button><button data-b="rank">ランキング</button><button data-b="hist">れきし</button><button data-b="note">おしらせ</button></div>
-   <div class="pane" id="b-pos"><div class="list" id="pl"></div></div>
+  <div class="card"><div class="tabs" id="bt"><button data-b="pos">ポジション</button><button data-b="orders">予約注文</button><button data-b="alert">アラート</button><button data-b="rank">ランキング</button><button data-b="hist">れきし</button><button data-b="note">おしらせ</button></div>
+   <div class="pane" id="b-pos"><div class="list" id="pl"></div>
+    <div id="protect-editor" style="display:none"><h2 style="margin-top:14px">利確・損切りの変更</h2><div id="protect-label" class="hint"></div>
+    <div class="row"><label>利確価格<input id="protect-tp" type="number" min="0" step="any" placeholder="空欄で解除"></label><label>損切り価格<input id="protect-sl" type="number" min="0" step="any" placeholder="空欄で解除"></label></div>
+    <button id="protect-save" style="margin-top:8px">保存</button> <button id="protect-cancel" class="ghost">閉じる</button><div id="protect-msg" class="hint"></div></div></div>
+   <div class="pane" id="b-orders"><div class="hint">レバレッジ取引で指値・逆指値を選んで予約できます。証拠金の事前確保はしません。複数注文は登録順に判定します。</div><div class="list" id="ol"></div><div id="order-msg" class="hint"></div></div>
    <div class="pane" id="b-alert"><div class="row"><select id="ad"><option value="above">以上になったら</option><option value="below">以下になったら</option></select></div>
     <div class="row" style="margin-top:6px"><input id="apr" type="number" inputmode="decimal" step="any" placeholder="価格"><button id="aa">追加</button></div>
     <div class="hint">開いていない間に条件を満たしても、次に開いたとき「おしらせ」に届きます。</div><div class="list" id="al" style="margin-top:6px"></div></div>
@@ -84,8 +93,13 @@ function appView(){
   $('#cl').onclick=async()=>{try{user=await api('claim',{});say('どんぐりを拾った！')}catch(e){say(e.message,1)}};
   $('#by').onclick=()=>act(()=>api('trade',{pair:sel,side:'buy',amount:$('#amt').value}),'買いました');
   $('#sl').onclick=()=>act(()=>api('trade',{pair:sel,side:'sell',amount:$('#amt').value}),'売りました');
-  $('#lg').onclick=()=>act(()=>api('open',{pair:sel,side:'long',units:$('#un2').value,lev:$('#lv').value}),'ロングを持ちました');
-  $('#st').onclick=()=>act(()=>api('open',{pair:sel,side:'short',units:$('#un2').value,lev:$('#lv').value}),'ショートを持ちました');
+  const enter=side=>{const type=$('#otype').value;act(()=>api(type==='market'?'open':'order',{pair:sel,side,units:$('#un2').value,lev:$('#lv').value,type,price:$('#entry-price').value,tp:$('#entry-tp').value,sl:$('#entry-sl').value}),type==='market'?'ポジションを持ちました':'予約注文を登録しました')};
+  $('#lg').onclick=()=>enter('long');$('#st').onclick=()=>enter('short');
+  $('#otype').onchange=()=>{const pending=$('#otype').value!=='market';$('#entry-label').style.display=pending?'block':'none';$('#lg').textContent=pending?'買い予約':'ロング(上がる)';$('#st').textContent=pending?'売り予約':'ショート(下がる)'};
+  let protectId=null;
+  $('#protect-cancel').onclick=()=>{protectId=null;$('#protect-editor').style.display='none'};
+  $('#protect-save').onclick=()=>act(()=>api('protection',{id:protectId,tp:$('#protect-tp').value,sl:$('#protect-sl').value}),'利確・損切りを更新しました','#protect-msg');
+  $('#ol').onclick=e=>{const b=e.target.closest('[data-cancel]');if(b)act(()=>api('order/cancel',{id:b.dataset.cancel}),'予約を取り消しました','#order-msg')};
   $('#mx1').onclick=()=>{const q=px[sel],p=PAIRS[sel];if(q)$('#amt').value=Math.floor(user.wallet[p.q]/q.ask*1e4)/1e4};
   $('#mx2').onclick=()=>{$('#amt').value=user.wallet[PAIRS[sel].b]};
   $('#un2').oninput=$('#lv').onchange=renderLq;$('#amt').oninput=renderQuote;
@@ -93,7 +107,8 @@ function appView(){
     act(()=>api('alert',{pair:'KD',dir:$('#ad').value,price:$('#apr').value}),'アラートを追加しました')};
     $('#gbuy').onclick=()=>act(()=>api('gold',{side:'buy',units:$('#gq').value}),'金のどんぐりを買いました！','#gmsg');
   $('#gsell').onclick=()=>act(()=>api('gold',{side:'sell',units:$('#gq').value}),'金のどんぐりを売りました','#gmsg');
-  $('#pl').onclick=e=>{const b=e.target.closest('[data-c]');if(b)act(()=>api('close',{id:b.dataset.c}),'決済しました')};
+  $('#pl').onclick=e=>{const b=e.target.closest('[data-c]');if(b)act(()=>api('close',{id:b.dataset.c}),'決済しました');
+    const edit=e.target.closest('[data-protect]');if(edit){const p=user.positions.find(p=>p.id===edit.dataset.protect);if(!p)return;protectId=p.id;$('#protect-tp').value=p.tp??'';$('#protect-sl').value=p.sl??'';$('#protect-label').textContent=(p.side==='long'?'ロング':'ショート')+' 建値 '+fmt(p.entry,3)+' ／ 決済側の現在値を基準に設定';$('#protect-msg').textContent='';$('#protect-editor').style.display='block';}};
   $('#al').onclick=e=>{const b=e.target.closest('[data-d]');if(b)act(()=>api('alert/del',{id:b.dataset.d}),'消しました')};
   $('#bt').onclick=e=>{const b=e.target.closest('[data-b]');if(b){btab=b.dataset.b;if(btab=='rank')loadRank();render()}};
   $$('[data-m]').forEach(b=>b.onclick=()=>{mode=b.dataset.m;render()});
@@ -125,13 +140,21 @@ function render(){
   $('#m-spot').style.display=mode=='spot'?'block':'none';$('#m-lev').style.display=mode=='lev'?'block':'none';
   renderQuote();
   $('#pl').innerHTML=user.positions.map(o=>{const pl=pnl(o),eq=o.margin+pl;return`<div><span>${pn(o.pair)}<br><small>${o.side=='long'?'ロング':'ショート'} ${fmt(o.units,4)} ×${o.lev}　建値 ${fmt(o.entry,dg(o.pair))}</small></span>
-    <span style="text-align:right"><b class="${pl>=0?'up':'dn'}">${pl>=0?'+':''}${fmt(pl,0)}</b><br><small>証拠金 ${fmt(o.margin,0)} → ${fmt(Math.max(0,eq),0)}</small></span><button data-c="${o.id}">決済</button></div>`}).join('')||'<small>ポジションはありません</small>';
+    <span style="text-align:right"><b class="${pl>=0?'up':'dn'}">${pl>=0?'+':''}${fmt(pl,0)}</b><br><small>証拠金 ${fmt(o.margin,0)} → ${fmt(Math.max(0,eq),0)}</small></span><span><small>利確 ${o.tp==null?"なし":fmt(o.tp,3)} ／ 損切り ${o.sl==null?"なし":fmt(o.sl,3)}</small><br><button class="ghost" data-protect="${o.id}">利確・損切り</button> <button data-c="${o.id}">決済</button></span></div>`}).join('')||'<small>ポジションはありません</small>';
+  $('#ol').innerHTML=(user.orders||[]).map(o=>`<div><span>${o.side==='long'?'買い':'売り'} ${o.type==='limit'?'指値':'逆指値'} @${fmt(o.price,3)}<br><small>${fmt(o.units,4)} ×${o.lev} ／ 利確 ${o.tp==null?'なし':fmt(o.tp,3)} ／ 損切り ${o.sl==null?'なし':fmt(o.sl,3)}<br>期限 ${new Date(o.expires).toLocaleString('ja-JP')}</small></span><button class="ghost" data-cancel="${o.id}">取消</button></div>`).join('')||'<small>予約注文はありません</small>';
   $('#al').innerHTML=user.alerts.map(a=>`<div><span>${pn(a.pair)} が ${fmt(a.price,2)} ${a.dir=='above'?'以上':'以下'}</span><button class="ghost" data-d="${a.id}">消す</button></div>`).join('')||'<small>アラートはありません</small>';
   $('#hl').innerHTML=user.history.map(h=>{const t=new Date(h.t).toLocaleString('ja-JP'),n=h.pair?pn(h.pair):'';
-    const s=h.kind=='gold'?`【金のどんぐり】${h.side=='buy'?'買い':'売り'} ${fmt(h.amount,0)}こ`:h.kind=='open'?`【新規】${n} ${h.side=='long'?'ロング':'ショート'} ${fmt(h.units,4)} ×${h.lev} @${fmt(h.price,2)}`:(h.kind=='close'||h.kind=='losscut')?`【${h.kind=='close'?'決済':'ロスカット'}】${n} 損益 ${h.pnl>=0?'+':''}${fmt(h.pnl,0)}どんぐり`:`${n} ${h.side=='buy'?'買':'売'} ${fmt(h.amount,4)} @${fmt(h.price,2)}`;
+    const s=h.kind=='gold'?`【金のどんぐり】${h.side=='buy'?'買い':'売り'} ${fmt(h.amount,0)}こ`:h.kind=='open'?`【新規】${n} ${h.side=='long'?'ロング':'ショート'} ${fmt(h.units,4)} ×${h.lev} @${fmt(h.price,2)}`:(['close','losscut','takeprofit','stoploss'].includes(h.kind))?`【${({close:'決済',losscut:'ロスカット',takeprofit:'利確',stoploss:'損切り'})[h.kind]}】${n} 損益 ${h.pnl>=0?'+':''}${fmt(h.pnl,0)}どんぐり`:`${n} ${h.side=='buy'?'買':'売'} ${fmt(h.amount,4)} @${fmt(h.price,2)}`;
     return`<div><span>${s}</span><small>${t}</small></div>`}).join('')||'<small>まだ取引なし</small>';
   $('#nl').innerHTML=user.notices.map(n=>`<div><span>${n.text}</span><small>${new Date(n.t).toLocaleString('ja-JP')}</small></div>`).join('')||'<small>おしらせはありません</small>';
   drawChart();
+}
+async function loadNews(){
+  const box=$('#news');if(!box)return;
+  try{const j=await api('news');if(!box.isConnected)return;box.replaceChildren();
+    for(const item of j.items){const row=document.createElement('div'),text=document.createElement('span'),time=document.createElement('small');
+      text.textContent=item.title;time.textContent=new Date(item.t).toLocaleString('ja-JP');row.append(text,time);box.append(row)}
+  }catch{if(box.isConnected)box.textContent='ニュースを取得できませんでした。次の更新で再試行します。'}
 }
 async function loadRank(){try{const j=await api('ranking');
   $('#rl').innerHTML=j.top.map((x,i)=>`<div><span>${i+1}. ${x.gold?'🏆':'🌰'} ${x.name.replace(/</g,'&lt;')}</span><b>${fmt(x.total,0)}</b></div>`).join('')+(j.me&&j.me.rank>20?`<div><span>…${j.me.rank}位 あなた</span><b>${fmt(j.me.total,0)}</b></div>`:'')+`<small>参加者 ${j.count}人（どんぐり換算）</small>`}catch{}}
@@ -165,6 +188,6 @@ function drawChart(){
 async function pollPrices(){try{const j=await api('prices');for(const k in j.prices){prev[k]=px[k]?px[k].mid:j.prices[k].mid;px[k]=j.prices[k]}render()}catch{}}
 async function pollMe(){try{user=await api('me');const un=user.notices.filter(n=>!n.seen&&!shown.has(n.id));
   if(un.length){un.reverse().forEach(n=>{shown.add(n.id);toast(n.text)});user=await api('seen',{})}render();if(btab=='rank')loadRank()}catch(e){if(/ログイン/.test(e.message)){token=null;localStorage.removeItem('tk');loginView()}}}
-async function start(){appView();await pollPrices();await pollMe();timers=[setInterval(pollPrices,1500),setInterval(pollMe,5000),setInterval(loadChart,5000)]}
+async function start(){timers.forEach(clearInterval);appView();loadNews();await pollPrices();await pollMe();timers=[setInterval(loadNews,30000),setInterval(pollPrices,1500),setInterval(pollMe,5000),setInterval(loadChart,5000)]}
 (async()=>{if(token){try{user=await api('me');start();return}catch{token=null;localStorage.removeItem('tk')}}loginView()})();
 </script></body></html>
